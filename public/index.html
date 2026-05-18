@@ -697,11 +697,11 @@ function handleCSV(event) {
 }
 
 function parseLottoCSV(text) {
-  const lines = text.replace(//g, '').split('\n').filter(l => l.trim());
+  const lines = text.split(/\r?\n/).filter(l => l.trim());
   const results = [];
   for (const line of lines) {
     const cols = line.split(',').map(s => s.trim().replace(/^\uFEFF/, ''));
-    if (!cols[0].includes('大樂透')) continue;
+    if (!cols[0].includes('\u5927\u6a02\u900f')) continue;
     try {
       const nums = [cols[6],cols[7],cols[8],cols[9],cols[10],cols[11]].map(Number).filter(n => n>=1&&n<=49);
       const special = parseInt(cols[12]);
@@ -714,7 +714,7 @@ function parseLottoCSV(text) {
 }
 
 function parsePowerCSV(text) {
-  const lines = text.replace(/\r/g, '').split('\n').filter(l => l.trim());
+  const lines = text.split(/\r?\n/).filter(l => l.trim());
   const results = [];
   for (const line of lines) {
     const cols = line.split(',').map(s => s.trim().replace(/^\uFEFF/, ''));
