@@ -477,8 +477,17 @@ select {
         <div class="header-sub">台灣彩券號碼統計</div>
       </div>
     </div>
-    <button class="refresh-btn" id="refreshBtn" onclick="refreshData()" title="更新資料">↻</button>
+    <button class="refresh-btn" id="refreshBtn" onclick="toggleUpdateMenu()" title="更新資料">↻</button>
   </div>
+
+  <!-- 更新選單 -->
+  <div id="updateMenu" style="display:none;margin:0 20px 12px;background:var(--bg2);border:1px solid var(--border2);border-radius:14px;overflow:hidden;">
+    <div style="padding:12px 16px;font-size:12px;color:var(--text3);border-bottom:1px solid var(--border)">選擇更新方式</div>
+    <button onclick="uploadCSV('lotto')" style="width:100%;padding:13px 16px;text-align:left;background:transparent;border:none;border-bottom:1px solid var(--border);color:var(--text);font-size:14px;cursor:pointer;font-family:inherit">📂 上傳大樂透 CSV（官網下載）</button>
+    <button onclick="uploadCSV('power')" style="width:100%;padding:13px 16px;text-align:left;background:transparent;border:none;border-bottom:1px solid var(--border);color:var(--text);font-size:14px;cursor:pointer;font-family:inherit">📂 上傳威力彩 CSV（官網下載）</button>
+    <button onclick="toggleUpdateMenu()" style="width:100%;padding:13px 16px;text-align:left;background:transparent;border:none;color:var(--text3);font-size:13px;cursor:pointer;font-family:inherit">✕ 取消</button>
+  </div>
+  <input type="file" id="csvInput" accept=".csv" style="display:none" onchange="handleCSV(event)">
 
   <!-- 彩種切換 -->
   <div class="game-tabs">
@@ -624,54 +633,102 @@ function tryLoadCache() {
   } catch(e) {}
 }
 
-// ── 抓取線上資料 ──
-async function refreshData() {
-  const btn = document.getElementById('refreshBtn');
-  btn.classList.add('spinning');
-  showLoading('正在抓取最新開獎資料…');
-  setStatus('loading', '連線中…');
+// ── 更新選單 ──
+let csvTarget = '';
 
-  try {
-    // 呼叫 Netlify Function API
-    const [lottoRes, powerRes] = await Promise.all([
-      fetch('/.netlify/functions/lottery?type=lotto'),
-      fetch('/.netlify/functions/lottery?type=power')
-    ]);
+function toggleUpdateMenu() {
+  const menu = document.getElementById('updateMenu');
+  menu.style.display = menu.style.display === 'none' ? '' : 'none';
+}
 
-    if (!lottoRes.ok || !powerRes.ok) throw new Error('API 回應錯誤');
+function uploadCSV(type) {
+  csvTarget = type;
+  document.getElementById('updateMenu').style.display = 'none';
+  document.getElementById('csvInput').click();
+}
 
-    const lottoJson = await lottoRes.json();
-    const powerJson = await powerRes.json();
+function handleCSV(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  showLoading('正在讀取 CSV 資料…');
 
-    if (lottoJson.success && lottoJson.data?.length > 0) {
-      gameData.lotto = lottoJson.data;
-      gameStats.lotto = calcStatsFromDraws(lottoJson.data, 49);
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    try {
+      const text = e.target.result;
+      const isLotto = csvTarget === 'lotto';
+      const draws = isLotto ? parseLottoCSV(text) : parsePowerCSV(text);
+
+      if (draws.length === 0) {
+        hideLoading();
+        alert('❌ 讀取失敗，請確認是正確的 CSV 檔案格式。');
+        return;
+      }
+
+      // 合併舊資料（保留舊的，新的排前面）
+      const existing = gameData[csvTarget] || [];
+      const existingPeriods = new Set(existing.map(d => d.period));
+      const newDraws = draws.filter(d => !existingPeriods.has(d.period));
+      const merged = [...newDraws, ...existing].slice(0, 300);
+
+      gameData[csvTarget] = merged;
+      gameStats[csvTarget] = calcStatsFromDraws(merged, isLotto ? 49 : 38);
+
+      // 存入 localStorage
+      const now = new Date().toISOString();
+      const cache = JSON.parse(localStorage.getItem('lottery_cache') || '{}');
+      cache[csvTarget] = merged;
+      cache.updatedAt = now;
+      localStorage.setItem('lottery_cache', JSON.stringify(cache));
+
+      hideLoading();
+      setStatus('ok', `已更新 ${isLotto ? '大樂透' : '威力彩'}：共 ${merged.length} 期（${now.slice(0,10)}）`);
+      renderCurrentView();
+      alert(`✅ 成功匯入 ${newDraws.length} 筆新資料！目前共 ${merged.length} 期。`);
+    } catch(err) {
+      hideLoading();
+      alert('❌ 讀取失敗：' + err.message);
     }
-    if (powerJson.success && powerJson.data?.length > 0) {
-      gameData.power = powerJson.data;
-      gameStats.power = calcStatsFromDraws(powerJson.data, 38);
-    }
+  };
 
-    // 存入快取
-    const now = new Date().toISOString();
-    localStorage.setItem('lottery_cache', JSON.stringify({
-      lotto: gameData.lotto,
-      power: gameData.power,
-      updatedAt: now
-    }));
+  // 自動偵測編碼（官網 CSV 為 UTF-8 with BOM）
+  reader.readAsText(file, 'UTF-8');
+  event.target.value = '';
+}
 
-    setStatus('ok', `已更新：${new Date(now).toLocaleString('zh-TW')}`);
-    renderCurrentView();
-    alert('✅ 資料更新成功！');
-
-  } catch(e) {
-    // 抓取失敗，保留內建資料
-    setStatus('err', '無法連線，使用內建資料（2025/01~2026/04）');
-    alert('⚠️ 無法取得最新資料，仍使用內建歷史資料。\n\n請確認網路連線後再試。');
-  } finally {
-    btn.classList.remove('spinning');
-    hideLoading();
+function parseLottoCSV(text) {
+  const lines = text.replace(/
+/g, '').split('\n').filter(l => l.trim());
+  const results = [];
+  for (const line of lines) {
+    const cols = line.split(',').map(s => s.trim().replace(/^\uFEFF/, ''));
+    if (!cols[0].includes('大樂透')) continue;
+    try {
+      const nums = [cols[6],cols[7],cols[8],cols[9],cols[10],cols[11]].map(Number).filter(n => n>=1&&n<=49);
+      const special = parseInt(cols[12]);
+      if (nums.length === 6 && special >= 1 && special <= 49) {
+        results.push({ period: cols[1], date: cols[2], main: nums.sort((a,b)=>a-b), special });
+      }
+    } catch(e) {}
   }
+  return results;
+}
+
+function parsePowerCSV(text) {
+  const lines = text.replace(/\r/g, '').split('\n').filter(l => l.trim());
+  const results = [];
+  for (const line of lines) {
+    const cols = line.split(',').map(s => s.trim().replace(/^\uFEFF/, ''));
+    if (!cols[0].includes('威力彩')) continue;
+    try {
+      const nums = [cols[6],cols[7],cols[8],cols[9],cols[10],cols[11]].map(Number).filter(n => n>=1&&n<=38);
+      const bonus = parseInt(cols[12]);
+      if (nums.length === 6 && bonus >= 1 && bonus <= 8) {
+        results.push({ period: cols[1], date: cols[2], main: nums.sort((a,b)=>a-b), bonus });
+      }
+    } catch(e) {}
+  }
+  return results;
 }
 
 function calcStatsFromDraws(draws, range) {
